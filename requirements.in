@@ -1,0 +1,5 @@
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+argon2-cffi>=23,<26
+mammoth>=1.9,<2
+nh3>=0.2,<1
