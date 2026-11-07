@@ -1,5 +1,6 @@
 """Real Docker persistence test; uses disposable host directories, account and project."""
 import json
+from io import BytesIO
 import os
 from pathlib import Path
 import secrets
@@ -7,6 +8,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import zipfile
 
 import httpx
 
@@ -64,6 +66,12 @@ def main():
                                        content=(original[i:i + 65536] for i in range(0, len(original), 65536)))
                 assert response.status_code == 201, response.text
                 assert client.get('/api/content', params={'path': '자료/binary.bin'}).content == original
+                result = client.get('/api/archive', params={'path': '자료'})
+                assert result.status_code == 200
+                assert client.get('/api/archive', params={'path': '자료', 'check': 'true'}).json() == {'filename': '자료.zip'}
+                with zipfile.ZipFile(BytesIO(result.content)) as archive:
+                    assert archive.read('자료/binary.bin') == original
+                    assert archive.testzip() is None
                 assert client.post('/api/upload?name=sample.docx', content=make_docx('Container DOCX')).status_code == 201
                 response = client.get('/api/preview?path=sample.docx')
                 assert response.status_code == 200 and 'Container DOCX' in response.json()['html'], response.text
@@ -78,7 +86,7 @@ def main():
                 assert client.patch('/api/entry', json={'path': '자료/binary.bin', 'destination': 'renamed.bin'}).status_code == 200
                 assert client.delete('/api/entry?path=renamed.bin').status_code == 200
                 assert client.get('/api/content?path=renamed.bin').status_code == 404
-                print('PASS: non-root Docker app, login, 2 MiB streamed upload/download, DOCX, local PDF assets, rename/delete, Range, account and file persistence across restart')
+                print('PASS: non-root Docker app, login, 2 MiB streamed upload/download, folder ZIP, DOCX, local PDF assets, rename/delete, Range, account and file persistence across restart')
         finally:
             print(run('down', '--remove-orphans').strip())
 

@@ -2,6 +2,7 @@
 import ctypes
 import errno
 import http.cookiejar
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+import zipfile
 
 from server.auth import create_owner
 from server.config import Settings
@@ -56,6 +58,11 @@ def main():
                     with client.open(base + f'/content?path={parent + "/" if parent else ""}{name}') as response:
                         assert response.read() == body
                 assert (disks[1] / 'files' / 'nested' / 'nested.txt').read_bytes() == body
+                with client.open(base + '/archive?path=nested') as response:
+                    with zipfile.ZipFile(BytesIO(response.read())) as archive:
+                        assert archive.namelist() == ['nested/', 'nested/nested.txt']
+                        assert archive.read('nested/nested.txt') == body
+                        assert archive.testzip() is None
                 # Prove whether the real mounted filesystem rejects the native exclusive rename.
                 fd = os.open(settings.files_dir, os.O_RDONLY | os.O_DIRECTORY)
                 try:
@@ -73,7 +80,7 @@ def main():
                 else:
                     raise AssertionError('Existing destination was not rejected')
                 assert (settings.files_dir / 'root.txt').read_bytes() == body
-                print('PASS: real mergerfs, two branches, epmfs policy, root/nested upload and download, byte equality, no-overwrite collision', flush=True)
+                print('PASS: real mergerfs, two branches, epmfs policy, root/nested upload and download, folder ZIP, byte equality, no-overwrite collision', flush=True)
         finally:
             if server:
                 server.terminate()

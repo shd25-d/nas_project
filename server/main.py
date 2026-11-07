@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, files, previews
+from . import archives, auth, files, previews
 from .config import Settings
 from .storage import Storage
 
@@ -18,6 +18,7 @@ def create_app(settings=None):
     app.include_router(auth.router)
     app.include_router(files.router)
     app.include_router(previews.router)
+    app.include_router(archives.router)
 
     @app.middleware('http')
     async def security_headers(request: Request, call_next):

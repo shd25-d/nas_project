@@ -25,9 +25,24 @@ export function contentURL(path: string, download = false) {
 export async function downloadFile(path: string) {
   // Check the session through the shared error handler, then let the browser stream bytes.
   await api('/session');
+  startDownload(contentURL(path, true), path.split('/').pop() || 'download');
+}
+
+export function archiveURL(path: string) {
+  return `/api/archive?${new URLSearchParams({ path })}`;
+}
+
+export async function downloadArchive(path: string) {
+  const url = archiveURL(path);
+  // Validate permissions and paths without buffering any ZIP bytes in the browser.
+  const result = await api<{ filename: string }>(`/archive?${new URLSearchParams({ path, check: 'true' })}`);
+  startDownload(url, result.filename);
+}
+
+function startDownload(url: string, filename: string) {
   const anchor = document.createElement('a');
-  anchor.href = contentURL(path, true);
-  anchor.download = path.split('/').pop() || 'download';
+  anchor.href = url;
+  anchor.download = filename;
   anchor.hidden = true;
   document.body.appendChild(anchor);
   anchor.click();

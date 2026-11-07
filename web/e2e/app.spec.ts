@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 
 async function login(page: import('@playwright/test').Page) {
   await page.goto('/');
@@ -67,6 +68,33 @@ test('expired session before download returns to login', async ({ page }) => {
   await expect(page.getByRole('dialog')).toContainText('Hello NAS');
   await page.context().clearCookies();
   await page.getByRole('link', { name: '원본 다운로드' }).click();
+  await expect(page.getByRole('button', { name: '로그인', exact: true })).toBeVisible();
+});
+
+test('folder menu downloads a ZIP including nested contents on mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+  const session = await (await page.request.get('/api/session')).json();
+  const headers = { 'X-CSRF-Token': session.csrf };
+  await page.request.post('/api/folders', { headers, data: { path: '', name: 'ZIP 자료' } });
+  await page.request.post('/api/folders', { headers, data: { path: 'ZIP 자료', name: '하위' } });
+  await page.request.post('/api/upload?path=ZIP%20%EC%9E%90%EB%A3%8C%2F%ED%95%98%EC%9C%84&name=hello.txt', { headers, data: 'nested ZIP content' });
+  await page.getByRole('button', { name: '새로고침' }).click();
+  await page.getByRole('button', { name: 'ZIP 자료 더 보기' }).click();
+  const event = page.waitForEvent('download');
+  await page.getByRole('link', { name: 'ZIP 다운로드', exact: true }).click();
+  const download = await event;
+  expect(download.suggestedFilename()).toBe('ZIP 자료.zip');
+  expect(await download.failure()).toBeNull();
+  const result = await readFile((await download.path())!);
+  expect(result.subarray(0, 2).toString()).toBe('PK');
+  expect(result.includes(Buffer.from('ZIP 자료/하위/hello.txt'))).toBe(true);
+});
+
+test('expired session before folder ZIP returns to login', async ({ page }) => {
+  await login(page);
+  await page.context().clearCookies();
+  await page.getByRole('button', { name: '현재 폴더 ZIP 다운로드' }).click();
   await expect(page.getByRole('button', { name: '로그인', exact: true })).toBeVisible();
 });
 
