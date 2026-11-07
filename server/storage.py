@@ -13,6 +13,7 @@ from fastapi import HTTPException
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 RESERVED = '.nas-upload'
 libc = ctypes.CDLL(None, use_errno=True)
+UNSUPPORTED_RENAME = {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}
 
 
 def components(path: str, allow_root=True):
@@ -52,39 +53,73 @@ def translate_errors():
 
 
 def rename_exclusive(src_fd: int, source: str, dst_fd: int, destination: str):
-    """Kernel-level no-replace rename, including directories (Linux and macOS)."""
+    """No-replace publication: native rename, or atomic hardlink for regular files."""
     if sys.platform == 'darwin':
         function, flags = libc.renameatx_np, 4  # RENAME_EXCL
     elif hasattr(libc, 'renameat2'):
         function, flags = libc.renameat2, 1  # RENAME_NOREPLACE
     else:
-        raise HTTPException(503, '이 운영체제는 안전한 파일 이동을 지원하지 않습니다.')
-    function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    function.restype = ctypes.c_int
-    if function(src_fd, os.fsencode(source), dst_fd, os.fsencode(destination), flags) != 0:
+        function = None
+    if function is not None:
+        function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        function.restype = ctypes.c_int
+        if function(src_fd, os.fsencode(source), dst_fd, os.fsencode(destination), flags) == 0:
+            return
         error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error))
+        if error not in UNSUPPORTED_RENAME:
+            raise OSError(error, os.strerror(error))
+    info = os.stat(source, dir_fd=src_fd, follow_symlinks=False)
+    if stat.S_ISDIR(info.st_mode):
+        raise HTTPException(503, '이 저장소는 덮어쓰기 없는 폴더 이동·이름 변경을 지원하지 않습니다. 파일 이동 또는 서버의 파일 관리 도구를 사용하세요.')
+    if not stat.S_ISREG(info.st_mode):
+        raise HTTPException(400, '일반 파일만 이동할 수 있습니다.')
+    try:
+        # link(2) publishes a complete file and atomically fails if destination exists.
+        # A plain exists()+rename() fallback could silently overwrite another writer.
+        os.link(source, destination, src_dir_fd=src_fd, dst_dir_fd=dst_fd, follow_symlinks=False)
+    except OSError as error:
+        if error.errno in UNSUPPORTED_RENAME | {errno.EXDEV}:
+            raise HTTPException(503, '저장소가 안전한 파일 연결을 지원하지 않습니다. mergerfs의 디스크 간 이동 정책 또는 하드링크 지원을 확인하세요.')
+        raise
+    os.unlink(source, dir_fd=src_fd)
 
 
 class Storage:
     def __init__(self, root: Path):
         self.root = root
         self.lock = threading.RLock()
+        self._prepared_staging = set()
         root.mkdir(parents=True, exist_ok=True)
         with self.directory('') as fd:
+            with self.staging(fd):
+                pass
+
+    @contextmanager
+    def staging(self, parent_fd: int):
+        """Stage under the destination parent to stay on its mergerfs branch."""
+        with self.lock, translate_errors():
             try:
-                os.mkdir(RESERVED, mode=0o700, dir_fd=fd)
+                os.mkdir(RESERVED, mode=0o700, dir_fd=parent_fd)
             except FileExistsError:
                 pass
-            staging = os.open(RESERVED, DIR_FLAGS, dir_fd=fd)
+            staging = os.open(RESERVED, DIR_FLAGS, dir_fd=parent_fd)
             try:
-                # One application worker owns staging; recover interrupted writes on startup.
-                for name in os.listdir(staging):
-                    info = os.stat(name, dir_fd=staging, follow_symlinks=False)
-                    if not stat.S_ISDIR(info.st_mode):
-                        os.unlink(name, dir_fd=staging)
-            finally:
+                info = os.fstat(staging)
+                identity = (info.st_dev, info.st_ino)
+                if identity not in self._prepared_staging:
+                    # Once per directory per process, before any active upload uses it.
+                    for name in os.listdir(staging):
+                        old = os.stat(name, dir_fd=staging, follow_symlinks=False)
+                        if not stat.S_ISDIR(old.st_mode):
+                            os.unlink(name, dir_fd=staging)
+                    self._prepared_staging.add(identity)
+            except BaseException:
                 os.close(staging)
+                raise
+        try:
+            yield staging
+        finally:
+            os.close(staging)
 
     @contextmanager
     def directory(self, path: str):

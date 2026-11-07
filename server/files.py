@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from .auth import authenticated, mutation
 from .formats import kind, media_type
-from .storage import DIR_FLAGS, RESERVED, filename, rename_exclusive, translate_errors
+from .storage import RESERVED, filename, rename_exclusive, translate_errors
 
 router = APIRouter(prefix='/api')
 
@@ -59,8 +59,7 @@ async def upload(request: Request, name: str, path: str = ''):
                 raise HTTPException(413, '파일이 업로드 크기 제한을 초과했습니다.')
         except ValueError:
             raise HTTPException(400, '잘못된 업로드 크기입니다.')
-    with storage.directory(path) as parent, storage.directory('') as root, translate_errors():
-        staging = os.open(RESERVED, DIR_FLAGS, dir_fd=root)
+    with storage.directory(path) as parent, storage.staging(parent) as staging, translate_errors():
         temporary = secrets.token_hex(24)
         fd = None
         try:
@@ -93,7 +92,6 @@ async def upload(request: Request, name: str, path: str = ''):
                 os.unlink(temporary, dir_fd=staging)
             except FileNotFoundError:
                 pass
-            os.close(staging)
 
 
 @router.patch('/entry', dependencies=[Depends(mutation)])

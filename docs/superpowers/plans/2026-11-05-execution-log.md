@@ -15,3 +15,14 @@
 - Desktop/mobile screenshots saved to ignored `artifacts/desktop.png` and `artifacts/mobile.png`; visually inspected without overflow.
 - Final image rebuilt and actual local service started. `docker compose ps` → healthy, published on `127.0.0.1:8080` only; `/` HTTP 200 and `/api/status` configured=false. `.env` uses current UID/GID; empty `data/files` and account database initialized. User must choose credentials with the interactive create-owner command.
 - Source remains in the provided workspace without committing, pushing, or publishing. No existing branch history existed to merge. Router/VPN and actual phone/network access remain outside this iteration as agreed.
+
+## 2026-11-07 mergerfs upload compatibility fix
+
+- User reported folder creation succeeded but file upload returned “지원하지 않는 경로입니다.” after moving the host storage onto Linux mergerfs under `/mnt/storage`.
+- Root cause reproduced in a disposable Linux container: mergerfs 2.33.5 returns EINVAL (22) from native `renameat2(RENAME_NOREPLACE)`. The generic path-error mapper hid the unsupported operation.
+- Added regular-file atomic hardlink publication when native no-replace rename is unsupported. Destination collisions still fail without replacement; other native errors are propagated.
+- Upload staging is now local to the destination parent, avoiding cross-branch hardlink failures with mergerfs epmfs path-preserving policy. Stale nested staging is cleaned on first use after restart; no active upload is cleaned by a second request.
+- Folder moves cannot use a hardlink fallback and now return an explicit 503 explaining the filesystem limitation. File moves may require compatible mergerfs cross-directory policy. README documents these limits and two-name crash recovery semantics of link/unlink file moves.
+- Regression tests first reproduced seven failures (RED), then complete backend suite passed 37 tests (GREEN). Seven real browser scenarios also passed. Docker build passed.
+- Real mergerfs two-branch epmfs integration test passed root/nested upload/download, byte equality, and existing-file preservation. Test container had no personal storage attached and was removed on exit.
+- Independent read-only code review: no material findings.
